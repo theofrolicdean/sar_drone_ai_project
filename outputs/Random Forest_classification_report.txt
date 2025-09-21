@@ -1,0 +1,16 @@
+Model: Random Forest
+Accuracy: 1.0000
+Precision: 1.0000
+Recall: 1.0000
+F1 Score: 1.0000
+
+Full Classification Report:
+              precision    recall  f1-score   support
+
+        fist       1.00      1.00      1.00      1168
+        palm       1.00      1.00      1.00      1217
+         sos       1.00      1.00      1.00       992
+
+    accuracy                           1.00      3377
+   macro avg       1.00      1.00      1.00      3377
+weighted avg       1.00      1.00      1.00      3377
