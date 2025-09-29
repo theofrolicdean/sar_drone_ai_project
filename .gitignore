@@ -4,6 +4,7 @@ asl_dataset/
 sar_drone_venv/
 >>>>>>> 73f2740 (Initialize)
 # Byte-compiled / optimized / DLL files
+.vscode/
 __pycache__/
 *.py[codz]
 *$py.class
