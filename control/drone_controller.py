@@ -118,11 +118,7 @@ class DroneController:
             logger.info("Joystick mode disabled.")
 
     def update(self, vision_data, dt):
-        ## --- MODIFICATION --- ##
-        # This check now allows the logic to run in webcam/simulation mode.
         if not self.is_running or (config.CONNECT_TO_DRONE and not self.tello.is_flying):
-            # If we expect a drone connection AND it's not flying, then we should exit.
-            # Otherwise (e.g., in webcam mode), we continue.
             return
 
         battery = self.tello.get_battery()

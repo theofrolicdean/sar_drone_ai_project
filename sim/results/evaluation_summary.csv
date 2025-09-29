@@ -1,0 +1,4 @@
+algorithm,num_successful_runs,mean_cost,median_cost,std_dev_cost,min_cost,max_cost,mean_compute_ms,median_compute_ms,std_dev_compute_ms,mean_duration_s,median_duration_s,std_dev_duration_s
+A*,1,19.0,19.0,0.0,19,19,0.31479999999994845,0.31479999999994845,0.0,71.6,71.6,0.0
+UCS,1,19.0,19.0,0.0,19,19,2.1617999999961057,2.1617999999961057,0.0,71.6,71.6,0.0
+Greedy,1,19.0,19.0,0.0,19,19,0.13109999999727506,0.13109999999727506,0.0,71.6,71.6,0.0
