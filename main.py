@@ -1,4 +1,3 @@
-# main.py
 import threading
 import time
 import sys
@@ -10,6 +9,9 @@ from control.drone_controller import DroneController, DroneState
 from vision.vision_processor import VisionProcessor
 from utils.logger import logger
 import config
+import numpy as np
+import os
+from datetime import datetime
 
 
 class MainApplication:
@@ -20,9 +22,20 @@ class MainApplication:
         self.results_queue = Queue(maxsize=1)          
         self.latest_detections = {"face_bbox": None, "gesture": None}
         self.latest_detections_lock = threading.Lock()
+        
+        self.capture_photo_flag = threading.Event()
+        self.photo_message = None
+        self.photo_message_time = 0
+        
+        if not os.path.exists('output'):
+            os.makedirs('output')
+            logger.info("Created 'output' directory for saving pictures.")
+
         self.vision_processor = VisionProcessor()
-        self.drone_controller = DroneController()
+        self.drone_controller = DroneController(self)
         self.survivor_detected_pos = None
+        self.planned_return_path = None 
+        self.mission_start_time = None 
         self.threads = []
         self.flask_app = create_flask_app(self)
 
@@ -52,68 +65,54 @@ class MainApplication:
 
     def _video_capture_loop(self):
         if not config.CONNECT_TO_DRONE:
-            logger.error("Drone connection is disabled in config.")
-            return
-
-        address = self.drone_controller.tello.get_udp_video_address()
-        logger.info(f"Connecting to Tello video stream at: {address}")
-        cap = cv2.VideoCapture(address)
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+            logger.warning("Drone not connected. Using webcam (ID 0) for video input.")
+            cap = cv2.VideoCapture(0)
+        else:
+            address = self.drone_controller.tello.get_udp_video_address()
+            logger.info(f"Connecting to Tello video stream at: {address}")
+            cap = cv2.VideoCapture(address)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
 
         if not cap.isOpened():
-            logger.error("Failed to open Tello video stream.")
+            logger.error("Failed to open video stream.")
             self.is_running = False
             return
 
         while self.is_running:
             ret, frame = cap.read()
             if not ret:
+                time.sleep(0.1)
                 continue
 
-            while not self.processing_frame_queue.empty():
-                self.processing_frame_queue.get_nowait()
-            self.processing_frame_queue.put(frame)
+            if self.capture_photo_flag.is_set():
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"output/capture_{timestamp}.jpg"
+                cv2.imwrite(filename, frame)
+                logger.info(f"Photo captured and saved as {filename}")
+                self.photo_message = f"Photo saved: {filename}"
+                self.photo_message_time = time.time()
+                self.capture_photo_flag.clear()
+
+            if not self.processing_frame_queue.full():
+                self.processing_frame_queue.put(frame)
 
         cap.release()
-
-
 
     def _vision_processing_loop(self):
         while self.is_running:
             try:
                 frame = self.processing_frame_queue.get(timeout=1)
-                
-                # If in joystick mode, skip gesture detection
-                if self.drone_controller.joystick_mode:
-                    processed_frame = frame
-                    face_bbox, hand_bbox, gesture = None, None, None
-                else:
-                    processed_frame, face_bbox, hand_bbox, gesture = self.vision_processor.process_frame(frame)
-
-                # Smaller, clear text for gestures
-                if gesture is not None:
-                    cv2.putText(processed_frame, f"Gesture: {gesture.upper()}",
-                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.7, (0, 255, 0), 2)
-
-                # Push the latest processed frame for display
-                while not self.display_frame_queue.empty():
-                    self.display_frame_queue.get_nowait()
-                self.display_frame_queue.put(processed_frame)
-
-                # Push detections for drone control
-                if self.results_queue.full():
-                    self.results_queue.get_nowait()
-                self.results_queue.put((face_bbox, gesture))
+                processed_frame, face_bbox, hand_bbox, gesture = self.vision_processor.process_frame(frame)
+                if not self.display_frame_queue.full():
+                    self.display_frame_queue.put(processed_frame)
+                if not self.results_queue.full():
+                    self.results_queue.put((face_bbox, gesture))
 
             except Empty:
                 continue
             except Exception as e:
                 logger.error(f"Error in vision processing loop: {e}", exc_info=True)
-
-
 
 
     def _drone_control_loop(self):
@@ -122,6 +121,9 @@ class MainApplication:
 
         while self.is_running:
             try:
+                if self.drone_controller.tello.is_flying and self.mission_start_time is None:
+                    self.mission_start_time = time.time()
+                
                 face_bbox, gesture = None, None
                 try:
                     face_bbox, gesture = self.results_queue.get(timeout=0.1)
@@ -136,8 +138,17 @@ class MainApplication:
 
                 if face_bbox is not None and self.survivor_detected_pos is None:
                     if self.drone_controller.state in [DroneState.SEARCHING, DroneState.TRACKING]:
-                         self.survivor_detected_pos = self.drone_controller.position_cm.copy()
-                         logger.info(f"Survivor located at position: {self.survivor_detected_pos}")
+                        self.survivor_detected_pos = self.drone_controller.position_cm.copy()
+                        logger.info(f"Survivor located at position: {self.survivor_detected_pos}")
+
+                        start_pos = self.drone_controller.position_cm[:2]
+                        goal_pos = self.drone_controller.home_position[:2]
+                        path_cm = self.drone_controller.path_planner.plan_path(start_pos, goal_pos)
+                        
+                        if path_cm:
+                            self.planned_return_path = (np.array(path_cm) / 100).tolist()
+                            logger.info(f"Planned A* return path with {len(self.planned_return_path)} waypoints.")
+                
                 time.sleep(1 / 30)
 
             except Exception as e:
@@ -162,11 +173,10 @@ def run_vision_tester():
         ret, frame = cap.read()
         if not ret:
             break
-
-        # Process frame and get bounding boxes 
+        
         processed_frame, face_bbox, hand_bbox, gesture = vision_processor.process_frame(frame)
-
-        cv2.imshow("Vision Tester - Press q to quit", processed_frame)
+        
+        cv2.imshow('Vision Tester - Press "q" to quit', processed_frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break

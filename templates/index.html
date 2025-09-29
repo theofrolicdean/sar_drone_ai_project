@@ -65,6 +65,14 @@
         .btn-danger:hover {
             background-color: #c82333;
         }
+        /* --- NEW --- Style for the Return to Home button */
+        .btn-warning {
+            background-color: #ffc107;
+            color: #212529;
+        }
+        .btn-warning:hover {
+            background-color: #e0a800;
+        }
         .btn-info {
             background-color: #17a2b8;
         }
@@ -102,14 +110,21 @@
             margin-bottom: 15px;
             transition: color 0.5s;
         }
-        #alert, #joystick-warning {
+        #alert, #joystick-warning, #photo-message {
             font-size: 18px;
             font-weight: bold;
             text-align: center;
             margin-top: 15px;
             min-height: 25px;
         }
-        #alert { color: #dc3545; }
+        #photo-message { color: #28a745; }
+        #alert { 
+            color: #dc3545; 
+            animation: blinker 1s linear infinite;
+        }
+        @keyframes blinker {
+            50% { opacity: 0; }
+        }
         #joystick-warning { color: #ffc107; }
         #video-feed {
             max-width: 960px;
@@ -152,6 +167,7 @@
             max-width: 600px;
             border-radius: 8px;
             position: relative;
+            white-space: pre-wrap;
         }
         .close-button {
             color: #aaa;
@@ -167,6 +183,7 @@
         <div class="controls">
             <h1>Drone Control</h1>
             <button class="btn" onclick="sendCommand('takeoff')">Take Off & Search</button>
+            <button class="btn btn-warning" onclick="sendCommand('return_to_home')">Return to Home</button>
             <button class="btn btn-danger" onclick="sendCommand('land')">Land</button>
             <button id="joystick-btn" class="btn btn-toggle" onclick="sendCommand('toggle_joystick')">Toggle Joystick</button>
             <button class="btn btn-info" onclick="generateSummary()">Generate Mission Summary</button>
@@ -176,8 +193,9 @@
                 <div id="main-status-message" class="status-item"><span>Connecting...</span></div>
                 <div id="status-state" class="status-item">State: <span>N/A</span></div>
                 <div id="status-battery" class="status-item">Battery: <span>N/A</span></div>
-                <div id="status-position" class.item">Position: <span>(0, 0, 0)</span></div>
+                <div id="status-position" class="status-item">Position: <span>(0, 0, 0)</span></div>
                 <div id="joystick-warning"></div>
+                <div id="photo-message"></div>
                 <div id="alert"></div>
             </div>
         </div>
@@ -198,16 +216,51 @@
     </div>
 
     <script>
+        // No changes are needed in the JavaScript. The existing sendCommand function
+        // is generic and will automatically handle the new 'return_to_home' command.
         const joystickBtn = document.getElementById('joystick-btn');
         const joystickWarning = document.getElementById('joystick-warning');
+        const photoMessageDiv = document.getElementById('photo-message');
         const mapCanvas = document.getElementById('map-canvas');
         const mapCtx = mapCanvas.getContext('2d');
         const modal = document.getElementById('summary-modal');
         const summaryText = document.getElementById('summary-text');
         const mainStatusMessage = document.getElementById('main-status-message').querySelector('span');
         const MAP_SIZE_METERS = 10; 
+        
+        let lastState = null;
+        let alarmSound = null;
+        let alarmInterval = null;
 
+        function playAlertSound() {
+            if (!alarmSound) return; 
+            if (alarmInterval) return; 
+
+            alarmSound.play();
+            alarmInterval = setInterval(() => {
+                alarmSound.currentTime = 0;
+                alarmSound.play();
+            }, 2000); 
+        }
+
+        function stopAlertSound() {
+            if (alarmInterval) {
+                clearInterval(alarmInterval);
+                alarmInterval = null;
+                if(alarmSound) {
+                    alarmSound.pause();
+                    alarmSound.currentTime = 0;
+                }
+            }
+        }
+        
         function sendCommand(command) {
+            if (!alarmSound) {
+                console.log("Initializing audio...");
+                alarmSound = new Audio('alarm.mp3');
+                alarmSound.play().then(() => alarmSound.pause()).catch(e => console.error("Audio unlock failed:", e));
+            }
+
             fetch(command, { method: 'POST' })
             .then(response => response.json())
             .then(data => console.log(`${command} command success:`, data.message))
@@ -227,9 +280,18 @@
                     document.getElementById('status-position').querySelector('span').textContent = posText;
 
                     const alertDiv = document.getElementById('alert');
-                    alertDiv.textContent = (state === 'SOS! Hovering for Rescue') ? '!!! SOS DETECTED !!!' : '';
-
-                    // Update main status message with instructions
+                    if (state === 'SOS! Hovering for Rescue') {
+                        alertDiv.textContent = '!!! SOS DETECTED !!!';
+                        if (lastState !== state) playAlertSound();
+                    } 
+                    else {
+                        alertDiv.textContent = '';
+                        stopAlertSound();
+                    }
+                    lastState = state;
+                    
+                    photoMessageDiv.textContent = data.photo_message || '';
+                    
                     switch (state) {
                         case 'On Ground':
                             mainStatusMessage.textContent = 'Ready to fly. Press "Take Off & Search".';
@@ -253,6 +315,10 @@
                             break;
                         case 'Returning to Home':
                             mainStatusMessage.textContent = 'Returning to home base.';
+                            mainStatusMessage.style.color = '#17a2b8';
+                            break;
+                        case 'SOS! Hovering for Rescue':
+                            mainStatusMessage.textContent = 'SOS! Holding position for rescue team.';
                             mainStatusMessage.style.color = '#dc3545';
                             break;
                         default:
@@ -267,7 +333,7 @@
                         joystickBtn.disabled = true;
                         joystickWarning.textContent = 'Joystick Not Connected!';
                     }
-                    
+
                     if (data.joystick_mode) {
                         joystickBtn.classList.add('active');
                         joystickBtn.textContent = 'Joystick Mode: ON';
@@ -275,8 +341,8 @@
                         joystickBtn.classList.remove('active');
                         joystickBtn.textContent = 'Joystick Mode: OFF';
                     }
-
-                    drawMap(data.drone_path, data.survivor_position);
+                    
+                    drawMap(data.drone_path, data.survivor_position, data.planned_path, data.search_path);
                 })
                 .catch(error => {
                     console.error('Error fetching status:', error);
@@ -284,31 +350,60 @@
                 });
         }
 
-        function drawMap(dronePath, survivorPosition) {
+        function drawMap(dronePath, survivorPosition, plannedPath, searchPath) {
             const canvasWidth = mapCanvas.width;
             const canvasHeight = mapCanvas.height;
-            const scale = Math.min(canvasWidth, canvasHeight) / (MAP_SIZE_METERS * 2);
+            const scale = Math.min(canvasWidth, canvasHeight) / (MAP_SIZE_METERS * 2.2);
+
+            const toCanvasX = (worldX) => canvasWidth / 2 + worldX * scale;
+            const toCanvasY = (worldY) => canvasHeight / 2 - worldY * scale;
 
             mapCtx.clearRect(0, 0, canvasWidth, canvasHeight);
+            
             mapCtx.strokeStyle = '#ddd';
+            mapCtx.lineWidth = 1;
             for (let i = -MAP_SIZE_METERS; i <= MAP_SIZE_METERS; i++) {
                 mapCtx.beginPath();
-                mapCtx.moveTo(canvasWidth / 2 + i * scale, 0);
-                mapCtx.lineTo(canvasWidth / 2 + i * scale, canvasHeight);
+                mapCtx.moveTo(toCanvasX(i), 0);
+                mapCtx.lineTo(toCanvasX(i), canvasHeight);
                 mapCtx.stroke();
                 mapCtx.beginPath();
-                mapCtx.moveTo(0, canvasHeight / 2 + i * scale);
-                mapCtx.lineTo(canvasWidth, canvasHeight / 2 + i * scale);
+                mapCtx.moveTo(0, toCanvasY(i));
+                mapCtx.lineTo(canvasWidth, toCanvasY(i));
+                mapCtx.stroke();
+            }
+
+            if (searchPath && searchPath.length > 1) {
+                mapCtx.strokeStyle = '#cccccc';
+                mapCtx.lineWidth = 1;
+                mapCtx.beginPath();
+                mapCtx.moveTo(toCanvasX(searchPath[0][0]), toCanvasY(searchPath[0][1]));
+                for (let i = 1; i < searchPath.length; i++) {
+                    mapCtx.lineTo(toCanvasX(searchPath[i][0]), toCanvasY(searchPath[i][1]));
+                }
                 mapCtx.stroke();
             }
             
-            if (dronePath && dronePath.length > 1) {
+            if (plannedPath && plannedPath.length > 1) {
                 mapCtx.strokeStyle = '#007bff';
                 mapCtx.lineWidth = 2;
+                mapCtx.setLineDash([5, 5]);
                 mapCtx.beginPath();
-                mapCtx.moveTo(canvasWidth / 2 + dronePath[0][0] * scale, canvasHeight / 2 - dronePath[0][1] * scale);
+                mapCtx.moveTo(toCanvasX(plannedPath[0][0]), toCanvasY(plannedPath[0][1]));
+                for (let i = 1; i < plannedPath.length; i++) {
+                    mapCtx.lineTo(toCanvasX(plannedPath[i][0]), toCanvasY(plannedPath[i][1]));
+                }
+                mapCtx.stroke();
+                mapCtx.setLineDash([]);
+            }
+
+            if (dronePath && dronePath.length > 1) {
+                mapCtx.strokeStyle = '#28a745';
+                mapCtx.lineWidth = 3;
+                mapCtx.beginPath();
+                mapCtx.moveTo(toCanvasX(dronePath[0][0]), toCanvasY(dronePath[0][1]));
                 for (let i = 1; i < dronePath.length; i++) {
-                    mapCtx.lineTo(canvasWidth / 2 + dronePath[i][0] * scale, canvasHeight / 2 - dronePath[i][1] * scale);
+                    mapCtx.lineTo(toCanvasX(dronePath[i][0]), toCanvasY(dronePath[i][1]));
                 }
                 mapCtx.stroke();
             }
@@ -316,19 +411,18 @@
             if (survivorPosition) {
                 mapCtx.fillStyle = 'red';
                 mapCtx.beginPath();
-                mapCtx.arc(canvasWidth / 2 + survivorPosition[0] * scale, canvasHeight / 2 - survivorPosition[1] * scale, 5, 0, 2 * Math.PI);
+                mapCtx.arc(toCanvasX(survivorPosition[0]), toCanvasY(survivorPosition[1]), 7, 0, 2 * Math.PI);
                 mapCtx.fill();
             }
 
             if (dronePath && dronePath.length > 0) {
                 const lastPos = dronePath[dronePath.length - 1];
-                mapCtx.fillStyle = 'green';
+                mapCtx.fillStyle = '#0056b3';
                 mapCtx.beginPath();
-                mapCtx.arc(canvasWidth / 2 + lastPos[0] * scale, canvasHeight / 2 - lastPos[1] * scale, 5, 0, 2 * Math.PI);
+                mapCtx.arc(toCanvasX(lastPos[0]), toCanvasY(lastPos[1]), 7, 0, 2 * Math.PI);
                 mapCtx.fill();
             }
         }
-
         function generateSummary() {
             summaryText.textContent = 'Generating...';
             modal.style.display = 'block';
@@ -342,16 +436,13 @@
                     summaryText.textContent = `An error occurred: ${error}`;
                 });
         }
-
         function closeModal() {
             modal.style.display = 'none';
         }
-
         function resizeCanvas() {
             const container = document.getElementById('map-container');
             mapCanvas.width = container.clientWidth;
             mapCanvas.height = container.clientHeight;
-            updateStatus();
         }
 
         window.addEventListener('resize', resizeCanvas);

@@ -7,37 +7,19 @@ import config
 import numpy as np
 
 def create_flask_app(main_app_instance):
-    """
-    Creates and configures the Flask application.
-    A factory function to allow passing the main application instance.
-    """
     app = Flask(__name__)
     app.main_app = main_app_instance
     app.drone_path = [] # Store drone path history
 
     def generate_frames():
-        """
-        Generator function to stream video frames to the web client.
-        It grabs real-time frames and overlays the latest detection data.
-        """
         while app.main_app.is_running:
             try:
                 frame = app.main_app.display_frame_queue.get(timeout=1)
                 
-                with app.main_app.latest_detections_lock:
-                    face_bbox = app.main_app.latest_detections.get('face_bbox')
-                    gesture = app.main_app.latest_detections.get('gesture')
-
-                if face_bbox:
-                    x, y, w, h = face_bbox
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-                if gesture:
-                    cv2.putText(frame, f"Gesture: {gesture.upper()}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
                 battery = app.main_app.drone_controller.tello.get_battery() if config.CONNECT_TO_DRONE else 100
                 state_val = app.main_app.drone_controller.state.value
-                cv2.putText(frame, f"State: {state_val}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                cv2.putText(frame, f"Battery: {battery}%", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(frame, f"State: {state_val}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(frame, f"Battery: {battery}%", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
                 ret, buffer = cv2.imencode('.jpg', frame)
                 if not ret:
@@ -54,25 +36,28 @@ def create_flask_app(main_app_instance):
 
     @app.route('/')
     def index():
-        """Render the main HTML page."""
         return render_template('index.html')
 
     @app.route('/video_feed')
     def video_feed():
-        """Video streaming route."""
         return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
     @app.route('/status')
     def status():
-        """API endpoint to get the current drone status."""
         drone = app.main_app.drone_controller
         survivor_pos = app.main_app.survivor_detected_pos
         
         current_pos_m = (drone.position_cm / 100).tolist()
         
-        # Add current position to path history
         if not app.drone_path or np.linalg.norm(np.array(current_pos_m) - np.array(app.drone_path[-1])) > 0.1:
              app.drone_path.append(current_pos_m)
+
+        photo_msg = None
+        if app.main_app.photo_message and (time.time() - app.main_app.photo_message_time < 5):
+             photo_msg = app.main_app.photo_message
+        else:
+             app.main_app.photo_message = None
+
 
         status_data = {
             'state': drone.state.value,
@@ -81,29 +66,63 @@ def create_flask_app(main_app_instance):
             'survivor_position': (survivor_pos / 100).tolist() if survivor_pos is not None else None,
             'joystick_connected': drone.joystick_connected,
             'joystick_mode': drone.joystick_mode,
-            'drone_path': app.drone_path
+            'drone_path': app.drone_path,
+            'planned_path': app.main_app.planned_return_path,
+            'search_path': (np.array(drone.search_path) / 100).tolist(),
+            'photo_message': photo_msg
         }
         return jsonify(status_data)
 
     @app.route('/takeoff', methods=['POST'])
     def takeoff():
-        """API endpoint to command the drone to take off."""
         logger.info("Takeoff command received from web GUI.")
         app.main_app.drone_controller.takeoff()
         return jsonify(success=True, message="Takeoff command sent.")
 
     @app.route('/land', methods=['POST'])
     def land():
-        """API endpoint to command the drone to land."""
         logger.info("Land command received from web GUI.")
         app.main_app.drone_controller.land()
         return jsonify(success=True, message="Land command sent.")
 
+    @app.route('/return_to_home', methods=['POST'])
+    def return_to_home():
+        logger.info("Return to Home command received from web GUI.")
+        app.main_app.drone_controller.trigger_return_to_home()
+        return jsonify(success=True, message="Return to Home command sent.")
+
     @app.route('/toggle_joystick', methods=['POST'])
     def toggle_joystick():
-        """API endpoint to toggle joystick mode."""
         logger.info("Toggle joystick command received from web GUI.")
         app.main_app.drone_controller.toggle_joystick_mode()
         return jsonify(success=True, message="Toggle joystick command sent.")
+
+    @app.route('/generate_summary', methods=['POST'])
+    def generate_summary():
+        logger.info("Mission summary requested.")
+        main_app = app.main_app
+        drone = main_app.drone_controller
+
+        if main_app.mission_start_time is None:
+            return jsonify(summary="Mission has not started yet.")
+
+        duration_seconds = time.time() - main_app.mission_start_time
+        duration_str = time.strftime("%H:%M:%S", time.gmtime(duration_seconds))
+        
+        survivor_pos_str = "Not detected"
+        if main_app.survivor_detected_pos is not None:
+            pos_m = main_app.survivor_detected_pos / 100
+            survivor_pos_str = f"({pos_m[0]:.1f}, {pos_m[1]:.1f}, {pos_m[2]:.1f}) meters"
+
+        summary_text = (
+            f"Mission Summary:\n"
+            f"-----------------\n"
+            f"Total Flight Time: {duration_str}\n"
+            f"Final Drone Status: {drone.state.value}\n"
+            f"Final Battery: {drone.tello.get_battery() if config.CONNECT_TO_DRONE else 100}%\n"
+            f"Survivor Detected At: {survivor_pos_str}\n"
+            f"Total Waypoints Flown: {len(app.drone_path)}"
+        )
+        return jsonify(summary=summary_text)
 
     return app

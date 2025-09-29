@@ -11,6 +11,7 @@ class VisionProcessor:
             self.face_cascade = cv2.CascadeClassifier(config.FACE_CASCADE_PATH)
             if self.face_cascade.empty():
                 logger.error(f"Failed to load Haarcascade from path: {config.FACE_CASCADE_PATH}")
+            
             self.mp_hands = mp.solutions.hands
             self.mp_drawing = mp.solutions.drawing_utils
             model_dict = pickle.load(open(model_path, 'rb'))
@@ -21,10 +22,10 @@ class VisionProcessor:
                 "S": "sos"
             }
             self.valid_classes = list(set(self.label_map.values()))
-
             logger.info("VisionProcessor initialized successfully.")
         except Exception as e:
             logger.error(f"Error initializing VisionProcessor: {e}", exc_info=True)
+            raise
 
     def detect_face(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -56,7 +57,6 @@ class VisionProcessor:
                 data_aux = []
 
                 for hand_landmarks in results.multi_hand_landmarks:
-                    # draw landmarks on original frame
                     self.mp_drawing.draw_landmarks(
                         frame,
                         hand_landmarks,
@@ -89,14 +89,14 @@ class VisionProcessor:
         face_bbox, face_center = self.detect_face(frame)
         gesture, hand_bbox = self.detect_gesture(frame)
 
-        # Draw face box 
+        # Draw face box safely
         if face_bbox is not None:
             x, y, w, h = face_bbox
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)  # Blue
             if face_center is not None:
                 cv2.circle(frame, face_center, 5, (0, 0, 255), -1)
 
-        # Draw hand box 
+        # Draw hand box safely
         if hand_bbox is not None:
             x_min, y_min, x_max, y_max = hand_bbox
             cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)  # Green
